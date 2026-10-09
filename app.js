@@ -86,17 +86,46 @@ function descarregar(bytesOText, nom, tipus) {
 }
 
 /* ============================ API ============================ */
+/*
+ * Apps Script de vegades triga molt o respon 404 de manera puntual.
+ * Es reintenta automàticament; l'identificador "idem" fa que el servidor no
+ * dupliqui un fitxatge o una absència si el primer intent sí que s'havia desat.
+ */
+const API_INTENTS = 3;
+const API_TIMEOUT_MS = 30000;
+const nouId = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+
 async function api(action, dades = {}) {
   if (!CONFIG.API_URL) return Demo.handle(action, dades);
-  const r = await fetch(CONFIG.API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },   // evita el preflight CORS d'Apps Script
-    body: JSON.stringify({ action, ...dades })
-  });
-  if (!r.ok) throw new Error(`Error del servidor (${r.status})`);
-  const j = await r.json();
-  if (!j.ok) throw new Error(j.error || 'Error desconegut');
-  return j;
+  const cos = JSON.stringify({ action, idem: nouId(), ...dades });
+  let darrerError;
+  for (let intent = 1; intent <= API_INTENTS; intent++) {
+    const ctrl = new AbortController();
+    const temps = setTimeout(() => ctrl.abort(), API_TIMEOUT_MS);
+    let j;
+    try {
+      const r = await fetch(CONFIG.API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },   // evita el preflight CORS d'Apps Script
+        body: cos,
+        signal: ctrl.signal
+      });
+      if (!r.ok) throw new Error(`Error del servidor (${r.status})`);
+      j = await r.json();
+    } catch (e) {
+      darrerError = e.name === 'AbortError' ? new Error('El servidor no respon') : e;
+      if (intent < API_INTENTS) {
+        toast(`Connexió lenta amb el servidor, reintentant (${intent + 1}/${API_INTENTS})…`);
+        await sleep(1000 * intent);
+      }
+      continue;
+    } finally {
+      clearTimeout(temps);
+    }
+    if (!j.ok) throw new Error(j.error || 'Error desconegut');   // errors de l'aplicació (PIN, validacions): no es reintenta
+    return j;
+  }
+  throw new Error(`${darrerError.message}. Torna-ho a provar d'aquí a uns segons.`);
 }
 
 /* ============================ Càlcul del mes ============================ */
