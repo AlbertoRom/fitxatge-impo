@@ -1,72 +1,85 @@
-# Fichaje web + Google Drive
+# Full d'assistència mensual — fitxatge web
 
-Web responsive (HTML/CSS/JS) para fichar entrada y salida desde cualquier dispositivo. Los fichajes se guardan en una **Google Sheet de tu Drive** y desde el panel de administración se generan informes (Google Sheet + PDF en Drive, o CSV) de un empleado o de todos.
+Web responsive per fitxar des de qualsevol dispositiu (entrada/sortida de **matí** i **tarda**), registrar **absències**, escriure el **resum de tasques** del mes, **signar** i generar el **PDF del full d'assistència** sobre la plantilla oficial. Totes les dades es desen en una **Google Sheet** del teu Drive i els PDF a la carpeta **Fulls d'assistència/AAAA-MM**.
 
 ```
-index.html   → la web
-styles.css   → estilos (móvil primero, modo oscuro, impresión)
-app.js       → lógica + modo demo
-Code.gs      → backend en Google Apps Script
+web/                 → el que es publica a Netlify
+  index.html
+  styles.css
+  app.js             → lògica, generació del PDF i mode demo
+  plantilla.pdf      → plantilla en blanc (A4)
+  vendor/pdf-lib.min.js
+backend/Code.gs      → Google Apps Script (no es publica)
+netlify.toml         → publica només web/
 ```
 
-Sin configurar nada, la web arranca en **modo demo** (datos en el navegador) para probarla: `E001 / 1234`, `E002 / 5678`, admin `admin`.
+Sense configurar res, la web funciona en **mode demo** (dades al navegador): `E001 / 1234`, `E002 / 5678`, admin `admin`.
 
-## 1. Backend en Google Drive (5 min)
+---
 
-1. Crea una Google Sheet nueva (p. ej. "Registro de fichajes").
-2. **Extensiones → Apps Script**. Borra el contenido y pega `Code.gs`. Guarda.
-3. Selecciona la función `setup` y pulsa **Ejecutar**. Acepta los permisos.
-   Crea las hojas **Empleados** y **Fichajes**, la carpeta **Informes de fichajes** en Drive y una contraseña admin provisional.
-4. **Configuración del proyecto (⚙) → Propiedades del script** → cambia `ADMIN_PASSWORD` (por defecto `cambiame`).
-5. **Implementar → Nueva implementación → Aplicación web**
-   - Ejecutar como: **Yo**
-   - Quién tiene acceso: **Cualquier usuario**
+## 1. Backend a Google Drive
+
+1. Crea una Google Sheet nova (p. ex. "Fitxatges agents cívics").
+2. **Extensions → Apps Script**. Enganxa el contingut de `backend/Code.gs` i desa.
+3. Tria la funció `setup` → **Executa** → accepta els permisos.
+   Crea els fulls **Empleats**, **Fitxatges**, **Absencies**, **Mensual** i la carpeta de Drive.
+4. **Configuració del projecte (⚙) → Propietats de l'script** → canvia `ADMIN_PASSWORD` (per defecte `canviam`).
+5. **Implementa → Nova implementació → Aplicació web**
+   - Executa com a: **Jo**
+   - Qui hi té accés: **Qualsevol usuari**
    Copia la URL que acaba en `/exec`.
 
-> Al modificar `Code.gs`, usa **Implementar → Gestionar implementaciones → editar (✎) → Nueva versión** para mantener la misma URL.
+> Quan modifiquis `Code.gs`: **Implementa → Gestiona les implementacions → ✎ → Versió nova**, i la URL es manté.
 
-## 2. Empleados
+### Empleats
 
-En la hoja **Empleados** añade una fila por persona:
+Al full **Empleats**, una fila per persona:
 
-| Código | Nombre | PIN | Activo |
-|---|---|---|---|
-| E001 | Ana García | 1234 | ☑ |
+| Codi | Nom i cognoms | PIN | Projecte | Categoria | Responsable | Actiu |
+|---|---|---|---|---|---|---|
+| E001 | Agent cívic 1 | 1234 | PO AGENTS CÍVICS | AGENT CÍVIC/A | Nom del responsable | ☑ |
 
-Desmarca *Activo* para dar de baja sin borrar su histórico. La columna PIN está como texto, así que los ceros a la izquierda se conservan.
+Projecte, Categoria i Responsable surten a la capçalera del PDF. Desmarca *Actiu* per donar de baixa sense perdre l'històric.
 
-## 3. Conectar la web
+## 2. Connectar la web
 
-En `app.js`:
+A `web/app.js`:
 
 ```js
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/XXXX/exec',
-  EMPRESA: 'Tu empresa',
-  AUTO_LOGOUT_SEG: 60
+  ...
 };
 ```
 
-## 4. Publicarla
+## 3. GitHub + Netlify
 
-Sube los 3 archivos a cualquier hosting estático con **HTTPS** (la geolocalización lo requiere): GitHub Pages, Netlify, Cloudflare Pages o tu servidor/IIS. Abre la URL desde móvil, tablet u ordenador; en móvil se puede "Añadir a pantalla de inicio".
+1. Puja aquesta carpeta a un repositori de GitHub (pot ser privat).
+2. Netlify → **Add new site → Import an existing project → GitHub** → tria el repo.
+3. No cal tocar res: `netlify.toml` ja indica `publish = "web"` i sense build.
+4. Deploy. Cada `git push` torna a publicar.
 
-El panel admin se abre directamente con `tu-web/#admin`.
+L'administració s'obre directament amb `https://el-teu-lloc.netlify.app/#admin`.
 
-## Cómo funciona
+---
 
-- **Fichar**: el empleado introduce código + PIN; la web muestra si está dentro o fuera y un único botón (Entrada/Salida). La **hora la pone el servidor** (Europe/Madrid), no el dispositivo, para que no se pueda manipular.
-- **Validaciones**: no deja dos entradas seguidas ni una salida sin entrada; bloqueo de 10 min tras 5 PIN erróneos; `LockService` evita duplicados por doble clic.
-- **Se registra**: ID, fecha, hora, timestamp ISO, empleado, tipo, dispositivo y (opcional) ubicación.
-- **Informes** (Administración): elige empleado o todos y rango de fechas.
-  - *Ver informe*: totales por empleado, detalle diario (primera entrada, última salida, tramos, horas, incidencias) y todos los fichajes.
-  - *Generar documento en Drive*: crea en **Informes de fichajes** una Google Sheet (Resumen, Detalle diario, Fichajes) y su **PDF**, y devuelve los enlaces.
-  - *CSV* (separador `;`, abre bien en Excel) e *Imprimir / PDF* desde el navegador.
-- Las horas se calculan emparejando Entrada→Salida; un turno que pasa de medianoche cuenta en el día de la entrada (salida marcada `+1d`). Entradas sin salida aparecen como incidencia.
+## Funcionament
 
-## Notas
+**Treballador**
+- Entra amb codi + PIN. Quatre botons: *Entrada matí, Sortida matí, Entrada tarda, Sortida tarda*. El botó que toca queda ressaltat; els fets mostren l'hora.
+- L'hora la posa el servidor (Europe/Madrid). Es valida l'ordre: no es pot sortir sense haver entrat, ni entrar al matí després de començar la tarda, ni repetir un fitxatge el mateix dia.
+- **Absències**: dia, motiu (FE, V, NL, A, BE, BA, PJ) i hores (`02:00`, `7`…). Es poden esborrar mentre el mes no està tancat.
+- **Full mensual**: tria el mes (de l'1 al 5 surt per defecte el mes anterior), revisa els fitxatges, escriu les tasques, signa i prem **Generar i descarregar PDF**. El PDF es descarrega i es desa a Drive juntament amb la signatura.
 
-- **Registro de jornada (España)**: el art. 34.9 del Estatuto de los Trabajadores obliga a conservar los registros 4 años y tenerlos a disposición de la plantilla, sus representantes y la Inspección. No borres filas de la hoja *Fichajes*; si hay que corregir algo, añade el fichaje que falte y anótalo en *Observaciones*.
-- Los PIN se guardan en claro en la Sheet, que solo ve su propietario. Para algo más serio, cámbialos por un hash SHA-256 (`Utilities.computeDigest`).
-- La API es pública (cualquiera con la URL puede llamarla), pero sin PIN/contraseña válidos no puede leer ni escribir nada.
-- Capacidad: Apps Script lee la hoja entera en cada fichaje; va bien hasta decenas de miles de filas. Si crece mucho, archiva años anteriores en otra hoja.
+**Administració**
+- Tria empleat (o tots) i mes → **Veure**: hores treballades, hores d'absència, incidències (entrades sense sortida…) i si el full ja està signat.
+- **Descarregar PDF**: un full per empleat (tots en un sol PDF si tries "Tots"), amb la signatura del treballador desada i, opcionalment, la del responsable.
+- **Desar PDF a Drive** i **CSV** (separador `;`, s'obre bé amb Excel).
+
+## Notes
+
+- **Correccions**: si algú s'oblida de fitxar, es corregeix directament al full *Fitxatges* de la Sheet (afegint la fila amb Data `AAAA-MM-DD`, Hora `HH:MM:SS` i Tipus `EM`/`SM`/`ET`/`ST`).
+- **Plantilla**: `web/plantilla.pdf` és la plantilla original sense dades. Si canvia el model, cal ajustar les coordenades de l'objecte `G` a `app.js`.
+- **Seguretat**: la URL de l'API és pública però sense PIN o contrasenya no dona accés a res. Bloqueig de 10 minuts després de 5 intents fallits. Els PIN es guarden a la Sheet, que només veu la persona propietària.
+- **Conservació**: el registre de jornada s'ha de conservar 4 anys (art. 34.9 ET). No esborris files de *Fitxatges*.
+- `pdf-lib` (MIT) s'inclou a `web/vendor` perquè la web no depengui de cap CDN.

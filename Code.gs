@@ -1,358 +1,395 @@
 /**
- * BACKEND DE FICHAJE — Google Apps Script
- * ------------------------------------------------------------
- * Vinculado a una Google Sheet de tu Drive. Guarda cada fichaje
- * (entrada/salida) en la hoja "Fichajes" y genera informes
- * (Google Sheet + PDF) en la carpeta "Informes de fichajes".
+ * FULL D'ASSISTÈNCIA MENSUAL — Backend (Google Apps Script)
+ * ---------------------------------------------------------------
+ * Vinculat a una Google Sheet del teu Drive. Desa:
+ *   - Fitxatges (entrada/sortida matí i tarda)
+ *   - Absències (hores + motiu)
+ *   - Resum de tasques mensual i signatura
+ *   - Els PDF generats, a la carpeta "Fulls d'assistència/AAAA-MM"
  *
- * Pasos: ver README.md. Resumen:
- *   1) Ejecuta setup() una vez.
- *   2) Implementar > Nueva implementación > Aplicación web
- *      (Ejecutar como: Yo · Acceso: Cualquier usuario).
- *   3) Copia la URL /exec en app.js → CONFIG.API_URL.
+ * Posada en marxa (veure README.md):
+ *   1) Executa setup() una vegada.
+ *   2) Implementa > Nova implementació > Aplicació web
+ *      (Executa com a: Jo · Qui hi té accés: Qualsevol usuari).
+ *   3) Copia la URL /exec a web/app.js → CONFIG.API_URL.
  */
 
 const TZ = 'Europe/Madrid';
-const HOJA_EMP = 'Empleados';
-const HOJA_FIC = 'Fichajes';
-const CARPETA_INFORMES = 'Informes de fichajes';
-const MAX_INTENTOS = 5;       // intentos fallidos antes de bloquear
-const BLOQUEO_SEG = 600;      // 10 minutos
+const CARPETA_ARREL = "Fulls d'assistència";
+const MAX_INTENTS = 5;
+const BLOQUEIG_SEG = 600;
 
-const CAB_EMP = ['Código', 'Nombre', 'PIN', 'Activo'];
-const CAB_FIC = ['ID', 'Fecha', 'Hora', 'Timestamp', 'Código', 'Nombre', 'Tipo',
-                 'Dispositivo', 'Latitud', 'Longitud', 'Observaciones'];
+const FULLS = {
+  Empleats:   ['Codi', 'Nom i cognoms', 'PIN', 'Projecte', 'Categoria', 'Responsable', 'Actiu'],
+  Fitxatges:  ['ID', 'Data', 'Hora', 'Timestamp', 'Codi', 'Nom', 'Tipus', 'Descripció', 'Dispositiu', 'Latitud', 'Longitud'],
+  Absencies:  ['ID', 'Data', 'Codi', 'Nom', 'Hores', 'Motiu', 'Registrat'],
+  Mensual:    ['Codi', 'Mes', 'Tasques', 'SignaturaId', 'PdfUrl', 'Actualitzat']
+};
+
+const TIPUS = { EM: 'Entrada matí', SM: 'Sortida matí', ET: 'Entrada tarda', ST: 'Sortida tarda' };
+const MOTIUS = { FE: 'Festiu', V: 'Vacances', NL: 'No laborable', A: 'Absència injustificada',
+                 BE: 'Baixa malaltia comuna', BA: 'Baixa accident laboral', PJ: 'Permís justificat' };
 
 /* ============================ SETUP ============================ */
 
 function setup() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const emp = obtenerHoja_(ss, HOJA_EMP, CAB_EMP);
-  emp.getRange('A:C').setNumberFormat('@'); // PIN como texto (conserva ceros)
-  if (emp.getLastRow() === 1) {
-    emp.appendRow(['E001', 'Empleado de ejemplo', '1234', true]);
-  }
-  emp.getRange('D2:D').insertCheckboxes();
+  Object.keys(FULLS).forEach(nom => {
+    const h = ss.getSheetByName(nom) || ss.insertSheet(nom);
+    if (h.getLastRow() === 0) {
+      h.appendRow(FULLS[nom]);
+      h.getRange(1, 1, 1, FULLS[nom].length).setFontWeight('bold').setBackground('#0b5cab').setFontColor('#ffffff');
+      h.setFrozenRows(1);
+    }
+    // Tot com a text (conserva zeros dels PIN i evita conversions de dates), excepte la casella "Actiu"
+    const cols = nom === 'Empleats' ? FULLS[nom].length - 1 : FULLS[nom].length;
+    h.getRange(1, 1, h.getMaxRows(), cols).setNumberFormat('@');
+  });
 
-  const fic = obtenerHoja_(ss, HOJA_FIC, CAB_FIC);
-  fic.getRange('A:H').setNumberFormat('@');
-  fic.getRange('K:K').setNumberFormat('@');
+  const emp = ss.getSheetByName('Empleats');
+  if (emp.getLastRow() === 1) {
+    emp.appendRow(['E001', 'Agent cívic 1', '1234', 'PO AGENTS CÍVICS', 'AGENT CÍVIC/A', '', true]);
+  }
+  emp.getRange('G2:G').insertCheckboxes();
+
+  const fullDef = ss.getSheetByName('Full 1') || ss.getSheetByName('Sheet1') || ss.getSheetByName('Hoja 1');
+  if (fullDef && ss.getSheets().length > 1 && fullDef.getLastRow() === 0) ss.deleteSheet(fullDef);
 
   const props = PropertiesService.getScriptProperties();
-  if (!props.getProperty('ADMIN_PASSWORD')) props.setProperty('ADMIN_PASSWORD', 'cambiame');
-
-  obtenerCarpeta_();
-  Logger.log('Listo. Cambia ADMIN_PASSWORD en Configuración del proyecto > Propiedades del script.');
+  if (!props.getProperty('ADMIN_PASSWORD')) props.setProperty('ADMIN_PASSWORD', 'canviam');
+  carpeta_();
+  Logger.log("Fet. Canvia ADMIN_PASSWORD a Configuració del projecte > Propietats de l'script.");
 }
 
 /* ============================ API ============================ */
 
 function doGet() {
-  return json_({ ok: true, mensaje: 'API de fichaje activa', hora: fmt_(new Date(), 'yyyy-MM-dd HH:mm:ss') });
+  return json_({ ok: true, missatge: 'API de fitxatge activa', hora: fmt_(new Date(), 'yyyy-MM-dd HH:mm:ss') });
 }
 
 function doPost(e) {
   try {
     const req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
-    const acciones = {
-      estado: accEstado_,
-      fichar: accFichar_,
-      empleados: accEmpleados_,
-      informe: accInforme_
+    const accions = {
+      estat: accEstat_, mes: accMes_, fitxar: accFitxar_,
+      absencia: accAbsencia_, esborrarAbsencia: accEsborrarAbsencia_,
+      tasques: accTasques_, desarFull: accDesarFull_,
+      empleats: accEmpleats_, mesAdmin: accMesAdmin_, desarPdfAdmin: accDesarPdfAdmin_
     };
-    const fn = acciones[req.action];
-    if (!fn) throw new Error('Acción no válida');
+    const fn = accions[req.action];
+    if (!fn) throw new Error('Acció no vàlida');
     return json_(Object.assign({ ok: true }, fn(req)));
   } catch (err) {
     return json_({ ok: false, error: err.message });
   }
 }
 
-/** Estado actual del empleado (dentro/fuera + fichajes de hoy) */
-function accEstado_(req) {
-  const emp = autenticar_(req.codigo, req.pin);
-  const fs = leerFichajes_().filter(f => f.codigo === emp.codigo);
-  return Object.assign({ empleado: publico_(emp) }, resumenEstado_(fs));
+/* ---------- Treballador ---------- */
+
+function accEstat_(req) {
+  const emp = autenticar_(req.codi, req.pin);
+  const mes = fmt_(new Date(), 'yyyy-MM');
+  return Object.assign({ empleat: public_(emp), avui: avui_(emp.codi) }, dadesMes_(emp, mes, false));
 }
 
-/** Registra una entrada o salida (la hora la pone el servidor) */
-function accFichar_(req) {
-  const lock = LockService.getScriptLock();
-  lock.waitLock(15000);
-  try {
-    const emp = autenticar_(req.codigo, req.pin);
-    const fs = leerFichajes_().filter(f => f.codigo === emp.codigo);
-    const ult = fs[fs.length - 1];
-    const dentro = !!ult && ult.tipo === 'Entrada';
+function accMes_(req) {
+  const emp = autenticar_(req.codi, req.pin);
+  return dadesMes_(emp, mesValid_(req.mes), false);
+}
 
-    const tipo = (req.tipo === 'Entrada' || req.tipo === 'Salida') ? req.tipo : (dentro ? 'Salida' : 'Entrada');
-    if (tipo === 'Entrada' && dentro) {
-      throw new Error('Ya tienes una entrada abierta (' + fechaES_(ult.fecha) + ' ' + ult.hora + '). Ficha la salida primero.');
-    }
-    if (tipo === 'Salida' && !dentro) throw new Error('No tienes ninguna entrada abierta.');
+function accFitxar_(req) {
+  return ambLock_(() => {
+    const emp = autenticar_(req.codi, req.pin);
+    const tipus = String(req.tipus || '');
+    if (!TIPUS[tipus]) throw new Error('Tipus de fitxatge no vàlid');
 
-    const ahora = new Date();
+    const fet = avui_(emp.codi);
+    if (fet[tipus]) throw new Error(TIPUS[tipus] + ' ja registrada avui a les ' + fet[tipus].slice(0, 5) + '.');
+    if (tipus === 'SM' && !fet.EM) throw new Error("Primer has de fitxar l'entrada del matí.");
+    if (tipus === 'ST' && !fet.ET) throw new Error("Primer has de fitxar l'entrada de la tarda.");
+    if (tipus === 'EM' && fet.ET) throw new Error("Ja has començat la tarda: no pots fitxar l'entrada del matí.");
+    if (tipus === 'ET' && fet.EM && !fet.SM) throw new Error('Tens el matí obert: fitxa primer la sortida del matí.');
+
+    const ara = new Date();
     const lat = num_(req.lat), lon = num_(req.lon);
-    const fila = [
-      Utilities.getUuid().slice(0, 8),
-      fmt_(ahora, 'yyyy-MM-dd'),
-      fmt_(ahora, 'HH:mm:ss'),
-      fmt_(ahora, "yyyy-MM-dd'T'HH:mm:ssXXX"),
-      emp.codigo, emp.nombre, tipo,
-      String(req.dispositivo || '').slice(0, 120),
-      lat === null ? '' : lat,
-      lon === null ? '' : lon,
-      String(req.obs || '').slice(0, 200)
-    ];
-    hoja_(HOJA_FIC).appendRow(fila);
+    full_('Fitxatges').appendRow([
+      Utilities.getUuid().slice(0, 8), fmt_(ara, 'yyyy-MM-dd'), fmt_(ara, 'HH:mm:ss'),
+      fmt_(ara, "yyyy-MM-dd'T'HH:mm:ssXXX"), emp.codi, emp.nom, tipus, TIPUS[tipus],
+      String(req.dispositiu || '').slice(0, 120), lat === null ? '' : lat, lon === null ? '' : lon
+    ]);
     SpreadsheetApp.flush();
-
-    const nuevo = filaAObj_(fila.map(String));
-    fs.push(nuevo);
-    return Object.assign({ empleado: publico_(emp), fichaje: nuevo }, resumenEstado_(fs));
-  } finally {
-    lock.releaseLock();
-  }
+    const nou = avui_(emp.codi);
+    return { avui: nou, tipus: tipus, hora: nou[tipus] };
+  });
 }
 
-/** Lista de empleados (admin) */
-function accEmpleados_(req) {
+function accAbsencia_(req) {
+  return ambLock_(() => {
+    const emp = autenticar_(req.codi, req.pin);
+    const data = String(req.data || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) throw new Error('Data no vàlida');
+    const motiu = String(req.motiu || '').toUpperCase();
+    if (!MOTIUS[motiu]) throw new Error('Motiu no vàlid');
+    const hores = normalitzaHores_(req.hores);
+    if (hores === null) throw new Error('Hores no vàlides (format HH:MM, màxim 12:00)');
+    if (!dinsFinestra_(data)) throw new Error("Només es poden registrar absències del mes actual, l'anterior o el següent.");
+
+    full_('Absencies').appendRow([Utilities.getUuid().slice(0, 8), data, emp.codi, emp.nom, hores, motiu,
+      fmt_(new Date(), 'yyyy-MM-dd HH:mm:ss')]);
+    SpreadsheetApp.flush();
+    return dadesMes_(emp, data.slice(0, 7), false);
+  });
+}
+
+function accEsborrarAbsencia_(req) {
+  return ambLock_(() => {
+    const emp = autenticar_(req.codi, req.pin);
+    const h = full_('Absencies');
+    const files = h.getDataRange().getDisplayValues();
+    for (let i = files.length - 1; i >= 1; i--) {
+      if (files[i][0] === String(req.id) && files[i][2] === emp.codi) {
+        if (!dinsFinestra_(files[i][1])) throw new Error("No es pot esborrar una absència d'un mes tancat.");
+        h.deleteRow(i + 1);
+        return dadesMes_(emp, files[i][1].slice(0, 7), false);
+      }
+    }
+    throw new Error('Absència no trobada');
+  });
+}
+
+function accTasques_(req) {
+  return ambLock_(() => {
+    const emp = autenticar_(req.codi, req.pin);
+    const mes = mesValid_(req.mes);
+    upsertMensual_(emp.codi, mes, { tasques: String(req.text || '').slice(0, 3000) });
+    return { desat: true };
+  });
+}
+
+function accDesarFull_(req) {
+  return ambLock_(() => {
+    const emp = autenticar_(req.codi, req.pin);
+    const mes = mesValid_(req.mes);
+    const dir = carpetaMes_(mes);
+    const nom = mes + ' - ' + emp.codi + ' - ' + emp.nom;
+    const canvis = { tasques: String(req.tasques || '').slice(0, 3000) };
+
+    if (req.signatura) {
+      const anterior = (llegirMensual_().find(m => m.codi === emp.codi && m.mes === mes) || {}).signaturaId;
+      if (anterior) try { DriveApp.getFileById(anterior).setTrashed(true); } catch (e) {}
+      const sig = dir.createFile(blobDeDataUrl_(req.signatura, 'image/png', 'Signatura - ' + nom + '.png'));
+      canvis.signaturaId = sig.getId();
+    }
+    const pdf = desarPdf_(dir, nom + '.pdf', req.pdf);
+    canvis.pdfUrl = pdf.getUrl();
+    upsertMensual_(emp.codi, mes, canvis);
+    return { pdfUrl: pdf.getUrl(), nom: pdf.getName() };
+  });
+}
+
+/* ---------- Administració ---------- */
+
+function accEmpleats_(req) {
   checkAdmin_(req.password);
-  return { empleados: leerEmpleados_().map(publico_) };
+  return { empleats: llegirEmpleats_().map(public_) };
 }
 
-/** Informe de fichajes: un empleado o todos ('*'), rango de fechas opcional */
-function accInforme_(req) {
+function accMesAdmin_(req) {
   checkAdmin_(req.password);
-  const desde = req.desde || '0000-00-00';
-  const hasta = req.hasta || '9999-12-31';
-  const cod = String(req.codigo || '*').trim().toUpperCase();
+  const mes = mesValid_(req.mes);
+  const codi = String(req.codi || '*').trim().toUpperCase();
+  const emps = llegirEmpleats_().filter(e => codi === '*' ? e.actiu : e.codi === codi);
+  if (!emps.length) throw new Error('Cap empleat trobat');
 
-  // Se emparejan entradas/salidas sobre TODO el histórico del empleado
-  // (así un turno que cruza medianoche se calcula bien) y luego se filtra.
-  const base = leerFichajes_().filter(f => cod === '*' || f.codigo === cod);
-  const enRango = f => f.fecha >= desde && f.fecha <= hasta;
-  const diario = resumir_(base).filter(enRango);
-  const fichajes = base.filter(enRango);
-  const totales = totalizar_(diario);
+  const fit = llegirFitxatges_().filter(f => f.data.slice(0, 7) === mes);
+  const abs = llegirAbsencies_().filter(a => a.data.slice(0, 7) === mes);
+  const mens = llegirMensual_().filter(m => m.mes === mes);
 
-  const documento = req.generarDoc
-    ? crearDocumento_(fichajes, diario, totales, { desde: req.desde, hasta: req.hasta, cod: cod })
-    : null;
-
-  return { fichajes: fichajes, diario: diario, totales: totales, documento: documento };
-}
-
-/* ============================ LÓGICA ============================ */
-
-function resumenEstado_(fs) {
-  const ult = fs[fs.length - 1] || null;
-  const hoy = fmt_(new Date(), 'yyyy-MM-dd');
   return {
-    dentro: !!ult && ult.tipo === 'Entrada',
-    ultimo: ult,
-    hoy: fs.filter(f => f.fecha === hoy)
+    mes: mes,
+    llista: emps.map(e => {
+      const m = mens.find(x => x.codi === e.codi) || {};
+      return {
+        empleat: public_(e),
+        fitxatges: fit.filter(f => f.codi === e.codi),
+        absencies: abs.filter(a => a.codi === e.codi),
+        tasques: m.tasques || '',
+        pdfUrl: m.pdfUrl || '',
+        signatura: req.ambSignatura && m.signaturaId ? dataUrlDeFitxer_(m.signaturaId) : ''
+      };
+    })
   };
 }
 
-/** Empareja Entrada→Salida por empleado y agrupa por día (día = fecha de la entrada) */
-function resumir_(fs) {
-  const porEmp = {};
-  fs.forEach(f => (porEmp[f.codigo] = porEmp[f.codigo] || []).push(f));
-  const salida = [];
-
-  Object.keys(porEmp).sort().forEach(cod => {
-    const lista = porEmp[cod].slice().sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
-    const dias = {};
-    const dia = f => dias[f.fecha] = dias[f.fecha] || {
-      codigo: cod, nombre: f.nombre, fecha: f.fecha,
-      primeraEntrada: '', ultimaSalida: '', tramos: 0, minutos: 0, incidencias: []
-    };
-    let abierta = null;
-
-    lista.forEach(f => {
-      if (f.tipo === 'Entrada') {
-        if (abierta) dia(abierta).incidencias.push('Entrada ' + abierta.hora.slice(0, 5) + ' sin salida');
-        abierta = f;
-        const d = dia(f);
-        if (!d.primeraEntrada) d.primeraEntrada = f.hora;
-      } else {
-        if (!abierta) { dia(f).incidencias.push('Salida ' + f.hora.slice(0, 5) + ' sin entrada'); return; }
-        const d = dia(abierta);
-        d.minutos += Math.max(0, (new Date(f.ts) - new Date(abierta.ts)) / 60000);
-        d.tramos++;
-        d.ultimaSalida = f.fecha === abierta.fecha ? f.hora : f.hora + ' (+1d)';
-        abierta = null;
-      }
-    });
-    if (abierta) dia(abierta).incidencias.push('Entrada ' + abierta.hora.slice(0, 5) + ' abierta');
-
-    Object.keys(dias).sort().forEach(k => {
-      const d = dias[k];
-      d.minutos = Math.round(d.minutos);
-      d.horas = hhmm_(d.minutos);
-      d.incidencias = d.incidencias.join('; ');
-      salida.push(d);
-    });
-  });
-  return salida;
+function accDesarPdfAdmin_(req) {
+  checkAdmin_(req.password);
+  const mes = mesValid_(req.mes);
+  const nom = String(req.nom || ('Fulls ' + mes)).replace(/[\\/:*?"<>|]/g, '-').slice(0, 120);
+  const pdf = desarPdf_(carpetaMes_(mes), nom + '.pdf', req.pdf);
+  return { pdfUrl: pdf.getUrl(), nom: pdf.getName() };
 }
 
-function totalizar_(diario) {
-  const t = {};
-  diario.forEach(d => {
-    const x = t[d.codigo] = t[d.codigo] || { codigo: d.codigo, nombre: d.nombre, dias: 0, minutos: 0, incidencias: 0 };
-    if (d.tramos > 0) x.dias++;
-    x.minutos += d.minutos;
-    if (d.incidencias) x.incidencias++;
+/* ============================ DADES ============================ */
+
+function dadesMes_(emp, mes, ambSignatura) {
+  const m = llegirMensual_().find(x => x.codi === emp.codi && x.mes === mes) || {};
+  return {
+    mes: mes,
+    fitxatges: llegirFitxatges_().filter(f => f.codi === emp.codi && f.data.slice(0, 7) === mes),
+    absencies: llegirAbsencies_().filter(a => a.codi === emp.codi && a.data.slice(0, 7) === mes),
+    tasques: m.tasques || '',
+    pdfUrl: m.pdfUrl || '',
+    teSignatura: !!m.signaturaId,
+    signatura: ambSignatura && m.signaturaId ? dataUrlDeFitxer_(m.signaturaId) : ''
+  };
+}
+
+function avui_(codi) {
+  const avui = fmt_(new Date(), 'yyyy-MM-dd');
+  const r = { EM: '', SM: '', ET: '', ST: '' };
+  llegirFitxatges_().forEach(f => {
+    if (f.codi === codi && f.data === avui && !r[f.tipus]) r[f.tipus] = f.hora;
   });
-  return Object.keys(t).sort().map(k => Object.assign(t[k], {
-    horas: hhmm_(t[k].minutos),
-    media: t[k].dias ? hhmm_(Math.round(t[k].minutos / t[k].dias)) : '0:00'
+  return r;
+}
+
+function llegirEmpleats_() {
+  return files_('Empleats').filter(r => String(r[0]).trim()).map(r => ({
+    codi: String(r[0]).trim().toUpperCase(), nom: String(r[1]).trim(), pin: String(r[2]).trim(),
+    projecte: String(r[3]).trim(), categoria: String(r[4]).trim(), responsable: String(r[5]).trim(),
+    actiu: !/^(false|fals|no|0)$/i.test(String(r[6]).trim())
+  }));
+}
+function llegirFitxatges_() {
+  return files_('Fitxatges').filter(r => r[0]).map(r => ({
+    id: r[0], data: r[1], hora: r[2], ts: r[3], codi: r[4], nom: r[5], tipus: r[6],
+    dispositiu: r[8], lat: r[9], lon: r[10]
+  }));
+}
+function llegirAbsencies_() {
+  return files_('Absencies').filter(r => r[0]).map(r => ({
+    id: r[0], data: r[1], codi: r[2], nom: r[3], hores: r[4], motiu: r[5]
+  }));
+}
+function llegirMensual_() {
+  return files_('Mensual').filter(r => r[0]).map(r => ({
+    codi: r[0], mes: r[1], tasques: r[2], signaturaId: r[3], pdfUrl: r[4]
   }));
 }
 
-/* ============================ DOCUMENTO ============================ */
-
-function crearDocumento_(fichajes, diario, totales, p) {
-  const carpeta = obtenerCarpeta_();
-  const quien = p.cod === '*' ? 'Todos' : p.cod + (totales[0] ? ' ' + totales[0].nombre : '');
-  const rango = (p.desde ? fechaES_(p.desde) : 'inicio') + ' - ' + (p.hasta ? fechaES_(p.hasta) : 'hoy');
-  const nombre = 'Fichajes · ' + quien + ' · ' + rango.replace(/\//g, '-');
-
-  const ss = SpreadsheetApp.create(nombre);
-  DriveApp.getFileById(ss.getId()).moveTo(carpeta);
-
-  // Resumen
-  const r = ss.getSheets()[0].setName('Resumen');
-  r.getRange('A1').setValue('Registro de jornada').setFontSize(16).setFontWeight('bold');
-  r.getRange('A2').setValue('Empleado: ' + quien + '   ·   Periodo: ' + rango);
-  r.getRange('A3').setValue('Generado: ' + fmt_(new Date(), 'dd/MM/yyyy HH:mm'));
-  escribirTabla_(r, 5,
-    ['Código', 'Nombre', 'Días trabajados', 'Horas totales', 'Media diaria', 'Días con incidencias'],
-    totales.map(t => [t.codigo, t.nombre, t.dias, t.horas, t.media, t.incidencias]));
-
-  // Detalle diario
-  escribirTabla_(ss.insertSheet('Detalle diario'), 1,
-    ['Código', 'Nombre', 'Fecha', 'Primera entrada', 'Última salida', 'Tramos', 'Horas', 'Incidencias'],
-    diario.map(d => [d.codigo, d.nombre, fechaES_(d.fecha), d.primeraEntrada, d.ultimaSalida, d.tramos, d.horas, d.incidencias]));
-
-  // Fichajes en bruto
-  escribirTabla_(ss.insertSheet('Fichajes'), 1,
-    ['Fecha', 'Hora', 'Código', 'Nombre', 'Tipo', 'Dispositivo', 'Latitud', 'Longitud'],
-    fichajes.map(f => [fechaES_(f.fecha), f.hora, f.codigo, f.nombre, f.tipo, f.dispositivo, f.lat, f.lon]));
-
-  SpreadsheetApp.flush();
-  const pdf = carpeta.createFile(DriveApp.getFileById(ss.getId()).getAs(MimeType.PDF).setName(nombre + '.pdf'));
-  return { nombre: nombre, url: ss.getUrl(), pdfUrl: pdf.getUrl() };
+function upsertMensual_(codi, mes, canvis) {
+  const h = full_('Mensual');
+  const files = h.getDataRange().getDisplayValues();
+  let fila = files.findIndex((r, i) => i > 0 && r[0] === codi && r[1] === mes);
+  const actual = fila > 0 ? files[fila] : [codi, mes, '', '', '', ''];
+  if (canvis.tasques !== undefined) actual[2] = canvis.tasques;
+  if (canvis.signaturaId !== undefined) actual[3] = canvis.signaturaId;
+  if (canvis.pdfUrl !== undefined) actual[4] = canvis.pdfUrl;
+  actual[5] = fmt_(new Date(), 'yyyy-MM-dd HH:mm:ss');
+  if (fila > 0) h.getRange(fila + 1, 1, 1, 6).setValues([actual]);
+  else h.appendRow(actual);
 }
 
-function escribirTabla_(sh, fila, cab, datos) {
-  sh.getRange(fila, 1, 1, cab.length).setValues([cab])
-    .setFontWeight('bold').setBackground('#0f766e').setFontColor('#ffffff');
-  if (datos.length) {
-    const rng = sh.getRange(fila + 1, 1, datos.length, cab.length);
-    rng.setNumberFormat('@').setValues(datos.map(r => r.map(v => (v === null || v === undefined) ? '' : String(v))));
-    rng.applyRowBanding(SpreadsheetApp.BandingTheme.LIGHT_GREY, false, false);
-  } else {
-    sh.getRange(fila + 1, 1).setValue('Sin datos en el periodo seleccionado');
-  }
-  sh.setFrozenRows(fila);
-  sh.autoResizeColumns(1, cab.length);
+function public_(e) {
+  return { codi: e.codi, nom: e.nom, projecte: e.projecte, categoria: e.categoria, responsable: e.responsable, actiu: e.actiu };
 }
 
-/* ============================ AUTH ============================ */
+/* ============================ AUTENTICACIÓ ============================ */
 
-function autenticar_(codigo, pin) {
-  codigo = String(codigo || '').trim().toUpperCase();
+function autenticar_(codi, pin) {
+  codi = String(codi || '').trim().toUpperCase();
   pin = String(pin || '').trim();
-  if (!codigo || !pin) throw new Error('Introduce código y PIN');
-
+  if (!codi || !pin) throw new Error('Introdueix codi i PIN');
   const cache = CacheService.getScriptCache();
-  const clave = 'fallos_' + codigo;
-  const fallos = Number(cache.get(clave) || 0);
-  if (fallos >= MAX_INTENTOS) throw new Error('Demasiados intentos fallidos. Vuelve a probar en 10 minutos.');
-
-  const emp = leerEmpleados_().find(x => x.codigo === codigo);
+  const clau = 'errors_' + codi;
+  const errors = Number(cache.get(clau) || 0);
+  if (errors >= MAX_INTENTS) throw new Error("Massa intents fallits. Torna-ho a provar d'aquí a 10 minuts.");
+  const emp = llegirEmpleats_().find(x => x.codi === codi);
   if (!emp || emp.pin !== pin) {
-    cache.put(clave, String(fallos + 1), BLOQUEO_SEG);
-    throw new Error('Código o PIN incorrectos');
+    cache.put(clau, String(errors + 1), BLOQUEIG_SEG);
+    throw new Error('Codi o PIN incorrectes');
   }
-  if (!emp.activo) throw new Error('Empleado dado de baja. Contacta con administración.');
-  cache.remove(clave);
+  if (!emp.actiu) throw new Error("Usuari de baixa. Contacta amb l'administració.");
+  cache.remove(clau);
   return emp;
 }
 
 function checkAdmin_(password) {
   const cache = CacheService.getScriptCache();
-  const fallos = Number(cache.get('fallos_admin') || 0);
-  if (fallos >= MAX_INTENTOS) throw new Error('Acceso bloqueado temporalmente. Prueba en 10 minutos.');
+  const errors = Number(cache.get('errors_admin') || 0);
+  if (errors >= MAX_INTENTS) throw new Error("Accés bloquejat temporalment. Prova-ho d'aquí a 10 minuts.");
   const ok = PropertiesService.getScriptProperties().getProperty('ADMIN_PASSWORD');
   if (!ok || String(password || '') !== ok) {
-    cache.put('fallos_admin', String(fallos + 1), BLOQUEO_SEG);
-    throw new Error('Contraseña de administración incorrecta');
+    cache.put('errors_admin', String(errors + 1), BLOQUEIG_SEG);
+    throw new Error("Contrasenya d'administració incorrecta");
   }
-  cache.remove('fallos_admin');
+  cache.remove('errors_admin');
 }
 
-/* ============================ DATOS ============================ */
+/* ============================ DRIVE ============================ */
 
-function leerEmpleados_() {
-  const h = hoja_(HOJA_EMP);
-  if (h.getLastRow() < 2) return [];
-  return h.getRange(2, 1, h.getLastRow() - 1, 4).getDisplayValues()
-    .filter(r => String(r[0]).trim() !== '')
-    .map(r => ({
-      codigo: String(r[0]).trim().toUpperCase(),
-      nombre: String(r[1]).trim(),
-      pin: String(r[2]).trim(),
-      activo: !/^(false|falso|no|0)$/i.test(String(r[3]).trim())
-    }));
+function carpeta_() {
+  const it = DriveApp.getFoldersByName(CARPETA_ARREL);
+  return it.hasNext() ? it.next() : DriveApp.createFolder(CARPETA_ARREL);
+}
+function carpetaMes_(mes) {
+  const arrel = carpeta_();
+  const it = arrel.getFoldersByName(mes);
+  return it.hasNext() ? it.next() : arrel.createFolder(mes);
+}
+function desarPdf_(dir, nom, base64) {
+  if (!base64) throw new Error('Falta el PDF');
+  const antics = dir.getFilesByName(nom);
+  while (antics.hasNext()) antics.next().setTrashed(true);   // substitueix la versió anterior
+  return dir.createFile(Utilities.newBlob(Utilities.base64Decode(base64), MimeType.PDF, nom));
+}
+function blobDeDataUrl_(dataUrl, tipus, nom) {
+  const m = String(dataUrl).match(/^data:image\/png;base64,(.+)$/);
+  if (!m) throw new Error('Signatura no vàlida');
+  if (m[1].length > 600000) throw new Error('Signatura massa gran');
+  return Utilities.newBlob(Utilities.base64Decode(m[1]), tipus, nom);
+}
+function dataUrlDeFitxer_(id) {
+  try { return 'data:image/png;base64,' + Utilities.base64Encode(DriveApp.getFileById(id).getBlob().getBytes()); }
+  catch (e) { return ''; }
 }
 
-function leerFichajes_() {
-  const h = hoja_(HOJA_FIC);
-  if (h.getLastRow() < 2) return [];
-  return h.getRange(2, 1, h.getLastRow() - 1, CAB_FIC.length).getDisplayValues()
-    .filter(r => r[0] !== '')
-    .map(filaAObj_);
+/* ============================ UTILITATS ============================ */
+
+function ambLock_(fn) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try { return fn(); } finally { lock.releaseLock(); }
 }
-
-function filaAObj_(r) {
-  return { id: r[0], fecha: r[1], hora: r[2], ts: r[3], codigo: r[4], nombre: r[5],
-           tipo: r[6], dispositivo: r[7], lat: r[8], lon: r[9], obs: r[10] };
-}
-
-function publico_(e) { return { codigo: e.codigo, nombre: e.nombre, activo: e.activo }; }
-
-/* ============================ UTILIDADES ============================ */
-
-function hoja_(nombre) {
-  const h = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(nombre);
-  if (!h) throw new Error('Falta la hoja "' + nombre + '". Ejecuta setup().');
+function full_(nom) {
+  const h = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(nom);
+  if (!h) throw new Error('Falta el full "' + nom + '". Executa setup().');
   return h;
 }
-
-function obtenerHoja_(ss, nombre, cab) {
-  const h = ss.getSheetByName(nombre) || ss.insertSheet(nombre);
-  if (h.getLastRow() === 0) {
-    h.appendRow(cab);
-    h.getRange(1, 1, 1, cab.length).setFontWeight('bold').setBackground('#0f766e').setFontColor('#ffffff');
-    h.setFrozenRows(1);
-  }
-  return h;
+function files_(nom) {
+  const h = full_(nom);
+  if (h.getLastRow() < 2) return [];
+  return h.getRange(2, 1, h.getLastRow() - 1, FULLS[nom].length).getDisplayValues();
 }
-
-function obtenerCarpeta_() {
-  const it = DriveApp.getFoldersByName(CARPETA_INFORMES);
-  return it.hasNext() ? it.next() : DriveApp.createFolder(CARPETA_INFORMES);
+function mesValid_(mes) {
+  mes = String(mes || fmt_(new Date(), 'yyyy-MM'));
+  if (!/^\d{4}-\d{2}$/.test(mes)) throw new Error('Mes no vàlid');
+  return mes;
 }
-
-function fmt_(d, patron) { return Utilities.formatDate(d, TZ, patron); }
-function fechaES_(iso) { const p = String(iso).split('-'); return p.length === 3 ? p[2] + '/' + p[1] + '/' + p[0] : iso; }
-function hhmm_(min) { min = Math.round(min); return Math.floor(min / 60) + ':' + String(min % 60).padStart(2, '0'); }
+function dinsFinestra_(dataIso) {
+  const ara = new Date();
+  const mesos = [-1, 0, 1].map(d => fmt_(new Date(ara.getFullYear(), ara.getMonth() + d, 15), 'yyyy-MM'));
+  return mesos.indexOf(String(dataIso).slice(0, 7)) >= 0;
+}
+function normalitzaHores_(v) {
+  const m = String(v || '').trim().match(/^(\d{1,2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  const h = +m[1], mi = +(m[2] || 0);
+  if (mi > 59 || h * 60 + mi <= 0 || h * 60 + mi > 720) return null;
+  return String(h).padStart(2, '0') + ':' + String(mi).padStart(2, '0');
+}
+function fmt_(d, patro) { return Utilities.formatDate(d, TZ, patro); }
 function num_(v) { const n = parseFloat(v); return isFinite(n) ? Math.round(n * 1e6) / 1e6 : null; }
-
 function json_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
