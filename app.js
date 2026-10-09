@@ -398,7 +398,7 @@ function pintaAvui() {
   }
 }
 
-function pintaMes() {
+function pintaMes(ambTasques = false) {
   const d = sessio.dades;
   if (!d) return;
   const g = construirMes(d.mes, d.fitxatges, d.absencies);
@@ -413,9 +413,15 @@ function pintaMes() {
     `<li><span><b>${dataCat(a.data)}</b> · ${esc(a.hores)} h · ${esc(a.motiu)} <span class="muted">(${esc(MOTIUS[a.motiu] || '')})</span></span>
      <button class="x" data-id="${esc(a.id)}" type="button">Esborrar</button></li>`).join('');
 
-  if (document.activeElement !== $('#tasques')) $('#tasques').value = d.tasques || '';
-  $('#tasques-estat').textContent = '';
+  // Només es recarrega el text en canviar de mes o d'usuari, per no esborrar canvis sense desar
+  if (ambTasques) { $('#tasques').value = d.tasques || ''; $('#tasques-estat').textContent = ''; }
   $('#pdf-drive').innerHTML = d.pdfUrl ? `Últim full desat a Drive: <a href="${esc(d.pdfUrl)}" target="_blank" rel="noopener">obrir</a>` : '';
+}
+
+// De l'1 al 5 de cada mes es lliura el full del mes anterior
+function mesPerDefecte() {
+  const avui = new Date();
+  return avui.getDate() <= 5 ? sumaMes(isoMes(avui), -1) : isoMes(avui);
 }
 
 function aplicaEstat(r) {
@@ -427,8 +433,7 @@ function aplicaEstat(r) {
 
   const avui = new Date(), actual = isoMes(avui), anterior = sumaMes(actual, -1);
   $('#sel-mes').innerHTML = [actual, anterior].map(m => `<option value="${m}">${nomMesCurt(m)}</option>`).join('');
-  // De l'1 al 5 de cada mes es lliura el full del mes anterior
-  sessio.mes = avui.getDate() <= 5 ? anterior : actual;
+  sessio.mes = r.mes || mesPerDefecte();
   $('#sel-mes').value = sessio.mes;
   $('#abs-data').value = isoData(avui);
   $('#abs-data').min = `${anterior}-01`;
@@ -437,15 +442,16 @@ function aplicaEstat(r) {
   pintaAvui();
   sig.neteja();
   requestAnimationFrame(() => sig.ajusta());
-  if (sessio.mes === actual) { sessio.dades = r; pintaMes(); }
-  else carregaMes();
+  sessio.dades = r;
+  pintaMes(true);
   reiniciaInactivitat();
+  carregarPlantilla().catch(() => {});        // precarrega la plantilla per al PDF
 }
 
 async function carregaMes() {
   try {
     sessio.dades = await api('mes', { codi: sessio.codi, pin: sessio.pin, mes: sessio.mes });
-    pintaMes();
+    pintaMes(true);
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -479,11 +485,11 @@ $('#form-login').addEventListener('submit', e => {
   e.preventDefault();
   ambCarrega(e.submitter || $('#form-login button'), async () => {
     const codi = $('#codi').value.trim().toUpperCase(), pin = $('#pin').value.trim();
-    const r = await api('estat', { codi, pin });
+    const r = await api('estat', { codi, pin, mes: mesPerDefecte() });
     Object.assign(sessio, { codi, pin });
     try { $('#recordar').checked ? localStorage.setItem('fitxatge_codi', codi) : localStorage.removeItem('fitxatge_codi'); } catch {}
     aplicaEstat(r);
-  });
+  }, 'Entrant…');
 });
 
 $$('.fitxa').forEach(b => b.addEventListener('click', () => ambCarrega(b, async () => {
@@ -494,8 +500,8 @@ $$('.fitxa').forEach(b => b.addEventListener('click', () => ambCarrega(b, async 
   pintaAvui();
   navigator.vibrate?.(80);
   toast(`${TIPUS[tipus]} registrada a les ${hm(r.hora)}`, 'ok');
-  if (sessio.mes === isoMes(new Date())) carregaMes();
-}).then(() => sessio.avui && pintaAvui())));
+  if (r.fitxatges && r.mes === sessio.mes) { sessio.dades = { ...sessio.dades, ...r }; pintaMes(); }
+}, 'Registrant…').then(() => sessio.avui && pintaAvui())));
 
 $('#btn-sortir').addEventListener('click', tancaSessio);
 
@@ -537,7 +543,7 @@ $('#btn-pdf').addEventListener('click', () => ambCarrega($('#btn-pdf'), async ()
   if (sig.buida()) throw new Error('Has de signar abans de generar el PDF');
   const signatura = sig.png();
   const tasques = $('#tasques').value;
-  const d = await api('mes', { codi: sessio.codi, pin: sessio.pin, mes: sessio.mes });
+  const d = sessio.dades && sessio.dades.mes === sessio.mes ? sessio.dades : await api('mes', { codi: sessio.codi, pin: sessio.pin, mes: sessio.mes });
   const bytes = await generarPdf([{ empleat: sessio.empleat, mes: sessio.mes, fitxatges: d.fitxatges, absencies: d.absencies, tasques, signatura }]);
   const nom = `Full_assistencia_${sessio.mes}_${sessio.empleat.codi}.pdf`;
   descarregar(bytes, nom, 'application/pdf');
@@ -724,7 +730,7 @@ const Demo = {
       return ok({ mes: d.mes, llista });
     }
     const e = this.auth(d.codi, d.pin);
-    if (action === 'estat') return ok({ empleat: this.pub(e), avui: this.avui(db, e.codi), ...this.mes(db, e, isoMes(new Date())) });
+    if (action === 'estat') return ok({ empleat: this.pub(e), avui: this.avui(db, e.codi), ...this.mes(db, e, d.mes || isoMes(new Date())) });
     if (action === 'mes') return ok(this.mes(db, e, d.mes));
     if (action === 'fitxar') {
       const a = this.avui(db, e.codi), t = d.tipus;
@@ -734,7 +740,7 @@ const Demo = {
       db.fitxatges.push({ id: this.id(), data: isoData(ara), hora: horaLocal(ara), codi: e.codi, nom: e.nom, tipus: t, dispositiu: d.dispositiu });
       this.desa(db);
       const nou = this.avui(db, e.codi);
-      return ok({ avui: nou, tipus: t, hora: nou[t] });
+      return ok({ avui: nou, tipus: t, hora: nou[t], ...this.mes(db, e, isoMes(ara)) });
     }
     if (action === 'absencia') {
       const m = String(d.hores).match(/^(\d{1,2})(?::(\d{2}))?$/);
