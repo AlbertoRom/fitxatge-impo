@@ -1,7 +1,21 @@
-# Netlify: publica només la carpeta web/ (el backend no s'exposa)
+# Web estàtica: tots els fitxers a l'arrel del repositori
 [build]
-  publish = "web"
-  command = ""
+  publish = "."
+  # No cal compilar. Una ordre que no fa res evita que Netlify executi un build autodetectat.
+  command = "echo 'Web estatica: sense build'"
+
+# No servir el backend ni la documentació
+[[redirects]]
+  from = "/Code.gs"
+  to = "/"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/README.md"
+  to = "/"
+  status = 404
+  force = true
 
 [[headers]]
   for = "/*"
