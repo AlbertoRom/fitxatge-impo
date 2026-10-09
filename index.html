@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ca">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b5cab">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Full d'assistència</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/></svg>
+      </span>
+      <span id="titol">Full d'assistència</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button data-tab="fitxar" class="active" role="tab">Fitxar</button>
+      <button data-tab="admin" role="tab">Administració</button>
+    </nav>
+  </header>
+
+  <div id="demo-banner" class="banner" hidden>
+    Mode demo: les dades només es desen en aquest navegador. Usuaris: <b>E001 / 1234</b>, <b>E002 / 5678</b> · Admin: <b>admin</b>
+  </div>
+
+  <main>
+    <!-- ============================ FITXAR ============================ -->
+    <section id="tab-fitxar" class="tab active">
+      <div class="clock">
+        <div id="hora" class="hora">--:--:--</div>
+        <div id="data" class="data">&nbsp;</div>
+      </div>
+
+      <!-- Login -->
+      <div class="card narrow" id="card-login">
+        <h2>Identifica't</h2>
+        <form id="form-login" autocomplete="on">
+          <label>Codi d'usuari
+            <input id="codi" name="username" autocomplete="username" autocapitalize="characters" spellcheck="false" required placeholder="E001">
+          </label>
+          <label>PIN
+            <input id="pin" name="password" type="password" inputmode="numeric" autocomplete="current-password" required placeholder="••••">
+          </label>
+          <label class="check"><input type="checkbox" id="recordar"> Recorda el meu codi en aquest dispositiu</label>
+          <button class="btn primary block" type="submit">Entrar</button>
+        </form>
+      </div>
+
+      <!-- Sessió treballador -->
+      <div id="zona-treballador" hidden>
+        <div class="card">
+          <div class="who">
+            <div>
+              <div class="muted small">Benvingut/da,</div>
+              <div id="emp-nom" class="nom"></div>
+            </div>
+            <button id="btn-sortir" class="btn ghost small" type="button">Tancar sessió</button>
+          </div>
+
+          <div id="estat" class="estat"></div>
+
+          <div class="fitxes">
+            <button class="fitxa" data-tipus="EM" type="button"><span class="f-lbl">Entrada matí</span><span class="f-hora"></span></button>
+            <button class="fitxa" data-tipus="SM" type="button"><span class="f-lbl">Sortida matí</span><span class="f-hora"></span></button>
+            <button class="fitxa" data-tipus="ET" type="button"><span class="f-lbl">Entrada tarda</span><span class="f-hora"></span></button>
+            <button class="fitxa" data-tipus="ST" type="button"><span class="f-lbl">Sortida tarda</span><span class="f-hora"></span></button>
+          </div>
+          <label class="check center"><input type="checkbox" id="geo"> Adjunta la meva ubicació al fitxatge</label>
+        </div>
+
+        <div class="card">
+          <h2>Registre d'absències</h2>
+          <form id="form-abs" class="abs-grid">
+            <label>Dia <input type="date" id="abs-data" required></label>
+            <label>Motiu
+              <select id="abs-motiu" required></select>
+            </label>
+            <label>Hores <input id="abs-hores" required placeholder="Ex: 02:00" inputmode="numeric" pattern="\d{1,2}(:\d{2})?" maxlength="5"></label>
+            <button class="btn secondary" type="submit">Desar absència</button>
+          </form>
+          <ul id="llista-abs" class="llista"></ul>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Full mensual</h2>
+            <select id="sel-mes" class="mini-select" aria-label="Mes del full"></select>
+          </div>
+
+          <details class="resum-mes" id="det-mes">
+            <summary><span id="resum-mes-txt">Veure els meus fitxatges del mes</span></summary>
+            <div class="table-wrap"><table id="t-mes"></table></div>
+          </details>
+
+          <label for="tasques">Resum de tasques realitzades durant el mes</label>
+          <textarea id="tasques" rows="5" maxlength="2500" placeholder="Descriu breument les tasques del mes…"></textarea>
+          <div class="row-end">
+            <span id="tasques-estat" class="muted small"></span>
+            <button id="btn-tasques" class="btn small" type="button">Desar tasques</button>
+          </div>
+
+          <label>Signatura digital</label>
+          <div class="sig-wrap">
+            <canvas id="sig" class="sig" aria-label="Zona de signatura"></canvas>
+            <span class="sig-hint" id="sig-hint">Signa aquí amb el dit o el ratolí</span>
+          </div>
+          <button id="btn-netejar" class="btn danger block" type="button">Netejar signatura</button>
+
+          <button id="btn-pdf" class="btn success block lg" type="button">Generar i descarregar PDF</button>
+          <p id="pdf-drive" class="muted small center"></p>
+        </div>
+        <p class="muted small center" id="auto-logout"></p>
+      </div>
+    </section>
+
+    <!-- ============================ ADMIN ============================ -->
+    <section id="tab-admin" class="tab">
+      <div class="card narrow" id="card-admin-login">
+        <h2>Accés administració</h2>
+        <form id="form-admin">
+          <label>Contrasenya
+            <input id="admin-pass" type="password" required autocomplete="current-password">
+          </label>
+          <button class="btn primary block" type="submit">Entrar</button>
+        </form>
+      </div>
+
+      <div id="admin-panel" hidden>
+        <div class="card">
+          <div class="card-head">
+            <h2>Fulls d'assistència</h2>
+            <button id="btn-admin-sortir" class="btn ghost small" type="button">Sortir</button>
+          </div>
+          <div class="grid">
+            <label>Empleat
+              <select id="f-emp"><option value="*">Tots els empleats actius</option></select>
+            </label>
+            <label>Mes <input type="month" id="f-mes"></label>
+          </div>
+          <label class="check"><input type="checkbox" id="f-sig-treb" checked> Incloure la signatura del treballador (si n'ha desat)</label>
+          <details class="resp">
+            <summary>Signatura del responsable (opcional)</summary>
+            <div class="sig-wrap small-sig">
+              <canvas id="sig-resp" class="sig"></canvas>
+              <span class="sig-hint">Signa aquí</span>
+            </div>
+            <button id="btn-netejar-resp" class="btn small" type="button">Netejar</button>
+          </details>
+          <div class="actions">
+            <button id="btn-veure" class="btn primary" type="button">Veure</button>
+            <button id="btn-admin-pdf" class="btn" type="button">Descarregar PDF</button>
+            <button id="btn-admin-drive" class="btn" type="button">Desar PDF a Drive</button>
+            <button id="btn-admin-csv" class="btn" type="button">CSV</button>
+          </div>
+          <div id="admin-links" class="links" hidden></div>
+        </div>
+
+        <div id="resultat" hidden>
+          <div class="stats" id="stats"></div>
+          <div class="card">
+            <h2>Resum per empleat</h2>
+            <div class="table-wrap"><table id="t-resum"></table></div>
+          </div>
+          <div class="card">
+            <h2>Detall diari</h2>
+            <div class="table-wrap"><table id="t-detall"></table></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="vendor/pdf-lib.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
