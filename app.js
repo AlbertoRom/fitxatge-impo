@@ -4,7 +4,7 @@
  *  Si la deixes buida, la web funciona en MODE DEMO (dades al navegador).
  * ===================================================================== */
 const CONFIG = {
-  API_URL: '',
+  API_URL: 'https://script.google.com/macros/s/AKfycbyf45k9Vfw4utsff3LPfNk61bwY6LLlufly4VS2NXq4dzTZ2ml2MQq2BGslfDXYAxBUjw/exec',
   TITOL: "Full d'assistència",
   PLANTILLA: 'plantilla.pdf',
   AUTO_LOGOUT_SEG: 300          // tanca la sessió després de 5 min sense activitat (0 = mai)
